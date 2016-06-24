@@ -1,6 +1,7 @@
 #!/usr/bin/env python
-import sys, os, re, requests, gzip, smtplib
+import sys, os, re, requests, gzip, smtplib, subprocess
 import config
+from requests.auth import HTTPBasicAuth
 from StringIO import StringIO
 from email.mime.text import MIMEText
 from simple_revert.simple_revert import download_changesets, revert_changes
@@ -30,31 +31,26 @@ def download_last_state():
 
 def download_replication(state):
     """Downloads replication archive for a given state, and returns a list of changeset data to process."""
-    url = '{0}/{1:03}/{2:03}/{3:03}.osm.gz'.format(REPLICATION_BASE_URL, int(state / 1000000), int(state / 1000) % 1000, state % 1000)
+    url = '{0}/{1:03}/{2:03}/{3:03}.osm.gz'.format(
+        REPLICATION_BASE_URL, int(state / 1000000), int(state / 1000) % 1000, state % 1000)
     response = requests.get(url)
     if response.status_code != 200:
         raise IOError('Cannot download {0}: error {1}'.format(url, response.status_code))
     gz = gzip.GzipFile(fileobj=StringIO(response.content))
     changesets = []
-    for event, element in etree.iterparse(gz, events=('end')):
+    for event, element in etree.iterparse(gz, events=('end',)):
         if element.tag == 'changeset':
             if int(element.get('uid')) in config.USERS:
                 changesets.append(int(element.get('id')))
+            element.clear()
     return changesets
 
 
-def revert(changeset):
-    print(changeset)
-
+def revert(changesets):
     def print_status(changeset_id, obj_type=None, obj_id=None, count=None, total=None):
-        if changeset_id == 'flush':
-            pass
-        elif changeset_id is not None:
-            print('downloading')
-        else:
-            print('reverting')
+        pass
 
-    diffs, ch_users = download_changesets([changeset], print_status)
+    diffs, ch_users = download_changesets(changesets, print_status)
 
     if len(diffs) > config.MAX_DIFFS:
         raise ValueError('Would not revert {0} changes'.format(len(diffs)))
@@ -62,11 +58,10 @@ def revert(changeset):
     changes = revert_changes(diffs, print_status)
 
     if not changes:
-        print('Already reverted')
         return
 
-    # TODO: no oauth?
-    oauth = OAuth1(config.OAUTH_KEY, config.OAUTH_SECRET, task.token, task.secret)
+    # Yup, just a plain basic auth. OAuth is too hard to initialize.
+    oauth = HTTPBasicAuth(config.OSM_USERNAME, config.OSM_PASSWORD)
 
     tags = {
         'created_by': config.CREATED_BY,
@@ -84,7 +79,7 @@ def revert(changeset):
         osc = changes_to_osc(changes, changeset_id)
         resp = requests.post('{0}/api/0.6/changeset/{1}/upload'.format(API_ENDPOINT, changeset_id), osc, auth=oauth)
         if resp.status_code == 200:
-            print('Reverted: {0}'.format(changeset_id))
+            print('Reverted in {0}'.format(changeset_id))
         else:
             raise IOError('Server rejected the changeset with code {0}: {1}'.format(resp.code, resp.text))
     finally:
@@ -92,15 +87,24 @@ def revert(changeset):
 
 
 def mail_error(changeset_id, error):
-    # TODO
-    msg = MIMEText('Error reverting changeset {0}:\n\n{1}\n\nSisyphus'.format(changeset_id, error))
+    body = 'Error reverting changeset {0}:\n{1}\n'.format(changeset_id, error)
+    sys.stderr.write(body)
+    if not config.FAIL_MAIL:
+        return
+
+    msg = MIMEText('{0}\nSisyphus'.format(body), _charset='utf-8')
     msg['Subject'] = 'Error reverting a changeset'
-    msg['From'] = config.CREATED_BY
+    sender = 'sisyphus@example.com'
+    msg['From'] = sender
     msg['To'] = config.FAIL_MAIL
 
-    s = smtplib.SMTP('localhost')
-    s.sendmail(config.CREATED_BY, [config.FAIL_MAIL], msg.as_string())
-    s.quit()
+    try:
+        p = subprocess.Popen([config.SENDMAIL, '-t', '-oi'], stdin=subprocess.PIPE)
+        p.communicate(msg.as_string())
+        if p.returncode != 0:
+            raise IOError('sendmail returned code {0}'.format(p.returncode))
+    except Exception as e:
+        sys.stderr.write('Error sending email: {0}\n'.format(e))
 
 
 if __name__ == '__main__':
@@ -114,14 +118,15 @@ if __name__ == '__main__':
         with open(STATE_FILE, 'r') as f:
             state = int(f.next().strip())
     except:
-        state = cur_state - config.DELAY
+        state = cur_state - config.DELAY_MINUTES - 1
 
-    for i in range(state, cur_state - config.DELAY):
+    for i in range(state, cur_state - config.DELAY_MINUTES):
         changesets = download_replication(i)
         for ch in changesets:
             try:
-                revert(ch)
+                print(ch)
+                revert([ch])
             except Exception as e:
                 mail_error(ch, e)
         with open(STATE_FILE, 'w') as f:
-            f.write(i)
+            f.write(str(i))
