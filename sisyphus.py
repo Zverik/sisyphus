@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import sys, os, re, requests, gzip, smtplib, subprocess
+import sys, os, re, requests, gzip, subprocess
 import config
 from requests.auth import HTTPBasicAuth
 from StringIO import StringIO
