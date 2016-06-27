@@ -111,7 +111,7 @@ if __name__ == '__main__':
     try:
         cur_state = download_last_state()
     except Exception as e:
-        print('Failed to download last state:' + e)
+        print('Failed to download last state: {0}'.format(e))
         sys.exit(1)
 
     try:
