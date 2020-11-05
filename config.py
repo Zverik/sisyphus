@@ -19,3 +19,8 @@ MAX_DIFFS = 50
 # Your OpenStreetMap credentials. DO NOT UPLOAD anywhere!
 OSM_USERNAME = ''
 OSM_PASSWORD = ''
+
+try:
+    from config_local import *
+except ImportError:
+    pass
